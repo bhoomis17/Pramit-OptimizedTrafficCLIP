@@ -12,7 +12,7 @@ env/
 *.onnx
 
 data/
-datasets/
+/datasets/
 checkpoints/
 outputs/
 logs/
