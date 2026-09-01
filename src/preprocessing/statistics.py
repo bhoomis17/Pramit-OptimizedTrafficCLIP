@@ -1,93 +1,81 @@
 import numpy as np
 
 
-def calculate_mean_iat(packet_timestamps):
+def calculate_mean_iat(packets):
     """
-    Calculate Mean Inter-Arrival Time (IAT).
+    Calculate the mean inter-arrival time (IAT)
+    of packets in a flow.
 
-    Parameters
-    ----------
-    packet_timestamps : array-like
-        Packet timestamps in seconds.
-
-    Returns
-    -------
-    float
-        Mean IAT in milliseconds.
+    Returns:
+        float: Mean IAT in milliseconds.
     """
 
-    timestamps = np.asarray(packet_timestamps, dtype=float)
-
-    if len(timestamps) < 2:
+    if len(packets) < 2:
         return 0.0
 
-    # Difference between consecutive packet timestamps
-    iats = np.diff(timestamps)
+    timestamps = np.array(
+        [float(packet.time) for packet in packets],
+        dtype=np.float64
+    )
 
-    # Convert seconds to milliseconds
-    iats_ms = iats * 1000.0
+    iats = np.diff(timestamps) * 1000.0
 
-    return float(np.mean(iats_ms))
+    return float(np.mean(iats))
 
 
-def calculate_jitter(packet_timestamps):
+def calculate_jitter(packets):
     """
-    Calculate jitter as the standard deviation of IATs.
+    Calculate jitter as the standard deviation
+    of inter-arrival times.
 
-    Parameters
-    ----------
-    packet_timestamps : array-like
-        Packet timestamps in seconds.
-
-    Returns
-    -------
-    float
-        Jitter in milliseconds.
+    Returns:
+        float: Jitter in milliseconds.
     """
 
-    timestamps = np.asarray(packet_timestamps, dtype=float)
-
-    if len(timestamps) < 2:
+    if len(packets) < 2:
         return 0.0
 
-    iats = np.diff(timestamps)
+    timestamps = np.array(
+        [float(packet.time) for packet in packets],
+        dtype=np.float64
+    )
 
-    # Convert seconds to milliseconds
-    iats_ms = iats * 1000.0
+    iats = np.diff(timestamps) * 1000.0
 
-    return float(np.std(iats_ms))
+    return float(np.std(iats))
 
 
-def calculate_entropy(payload):
+def calculate_entropy(packets):
     """
-    Calculate Shannon entropy of packet payload bytes.
+    Calculate Shannon entropy of the payload bytes
+    in a flow.
 
-    Parameters
-    ----------
-    payload : array-like
-        Payload bytes with values in the range 0-255.
-
-    Returns
-    -------
-    float
-        Shannon entropy in bits.
+    Returns:
+        float: Shannon entropy.
     """
 
-    payload = np.asarray(payload, dtype=np.uint8).flatten()
+    payload_bytes = []
 
-    if len(payload) == 0:
+    for packet in packets:
+
+        # Raw packet payload
+        if hasattr(packet, "payload"):
+            try:
+                payload_bytes.extend(bytes(packet.payload))
+            except Exception:
+                pass
+
+    if len(payload_bytes) == 0:
         return 0.0
 
-    # Count occurrences of each byte value
-    counts = np.bincount(payload, minlength=256)
+    data = np.array(payload_bytes, dtype=np.uint8)
 
-    # Convert counts to probabilities
+    counts = np.bincount(data, minlength=256)
+
     probabilities = counts / np.sum(counts)
 
-    # Remove zero probabilities to avoid log2(0)
     probabilities = probabilities[probabilities > 0]
 
-    # Shannon entropy
     entropy = -np.sum(
         probabilities * np.log2(probabilities)
     )
@@ -95,52 +83,20 @@ def calculate_entropy(payload):
     return float(entropy)
 
 
-def calculate_statistics(packet_timestamps, payload):
+def calculate_statistics(packets):
     """
-    Calculate all three traffic statistics.
+    Calculate all three statistical traffic features.
 
-    Returns
-    -------
-    numpy.ndarray
+    Returns:
+        numpy.ndarray:
         [mean_iat, jitter, entropy]
     """
 
-    mean_iat = calculate_mean_iat(packet_timestamps)
-    jitter = calculate_jitter(packet_timestamps)
-    entropy = calculate_entropy(payload)
+    mean_iat = calculate_mean_iat(packets)
+    jitter = calculate_jitter(packets)
+    entropy = calculate_entropy(packets)
 
     return np.array(
         [mean_iat, jitter, entropy],
         dtype=np.float32
     )
-
-
-if __name__ == "__main__":
-    # Simple test data
-
-    timestamps = np.array([
-        0.000,
-        0.010,
-        0.025,
-        0.045,
-        0.070
-    ])
-
-    payload = np.array([
-        10, 20, 10, 20, 30,
-        10, 20, 30, 40, 50
-    ])
-
-    mean_iat = calculate_mean_iat(timestamps)
-    jitter = calculate_jitter(timestamps)
-    entropy = calculate_entropy(payload)
-
-    statistics = calculate_statistics(
-        timestamps,
-        payload
-    )
-
-    print("Mean IAT:", mean_iat, "ms")
-    print("Jitter:", jitter, "ms")
-    print("Entropy:", entropy)
-    print("Statistics vector:", statistics)
