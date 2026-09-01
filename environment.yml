@@ -1,0 +1,41 @@
+name: traffic-opt
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+
+  # Core data
+  - pandas=2.1.*
+  - numpy
+  - scipy
+  - scapy
+  - requests
+  - py7zr
+  - pyyaml
+
+  # Deep Learning
+  - pytorch=2.8.*
+  - torchvision=0.15.*
+  - transformers=5.3.0
+  - huggingface_hub=1.6.0 
+
+  # Metrics
+  - scikit-learn=1.7.2
+
+  # Visualization
+  - matplotlib
+  - seaborn
+
+  # Optimization
+  - optuna=4.6.0
+
+  # Environment & config
+  - python-dotenv
+
+  - pip
+  - pip:
+      - mlflow==3.10.0
+      - dagshub==0.6.8
+      - onnx 
+      - onnxruntime
