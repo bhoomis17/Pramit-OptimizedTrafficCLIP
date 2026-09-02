@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 import torch
 from PIL import Image
@@ -15,71 +14,33 @@ class TrafficDataset(Dataset):
         image_size=28,
         statistics_csv=None
     ):
-        # Read original CSV containing image_path and label
+        # train.csv already contains:
+        # image_path, label, mean_iat, jitter, entropy
         self.data = pd.read_csv(csv_file)
 
-        # Read statistics CSV if provided
-        if statistics_csv is not None:
+        required = [
+            "image_path",
+            "label",
+            "mean_iat",
+            "jitter",
+            "entropy"
+        ]
 
-            statistics_data = pd.read_csv(statistics_csv)
+        missing = [c for c in required if c not in self.data.columns]
 
-            # Match using image filename
-            statistics_data["image_name"] = (
-                statistics_data["image_path"].apply(os.path.basename)
+        if missing:
+            raise ValueError(
+                f"Missing required columns: {missing}"
             )
-
-            self.data["image_name"] = (
-                self.data["image_path"].apply(os.path.basename)
-            )
-
-            # Merge statistics with dataset
-            self.data = self.data.merge(
-                statistics_data[
-                    [
-                        "image_name",
-                        "mean_iat",
-                        "jitter",
-                        "entropy"
-                    ]
-                ],
-                on="image_name",
-                how="left"
-            )
-
-            # Remove helper column
-            self.data.drop(
-                columns=["image_name"],
-                inplace=True
-            )
-
-            # Ensure every image got statistics
-            if self.data[
-                ["mean_iat", "jitter", "entropy"]
-            ].isnull().any().any():
-
-                raise ValueError(
-                    "Some images do not have corresponding statistical features."
-                )
-
-        else:
-
-            # Keep base model compatible
-            self.data["mean_iat"] = 0.0
-            self.data["jitter"] = 0.0
-            self.data["entropy"] = 0.0
 
         # Class mapping
         if class_to_idx is None:
-
             classes = sorted(self.data["label"].unique())
-
             self.class_to_idx = {
                 name: idx
                 for idx, name in enumerate(classes)
             }
-
         else:
-
             self.class_to_idx = class_to_idx
 
         # Image transformation
@@ -103,7 +64,6 @@ class TrafficDataset(Dataset):
 
         label = self.class_to_idx[row["label"]]
 
-        # Create 3-value statistics tensor
         stats = torch.tensor(
             [
                 row["mean_iat"],

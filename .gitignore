@@ -1,20 +1,14 @@
-__pycache__/
-*.pyc
-
 .venv/
+.venv310/
 venv/
 env/
 
+__pycache__/
+*.py[cod]
+
 .vscode/
+.idea/
 
-*.pth
 *.pt
-*.onnx
-
-data/
-/datasets/
-checkpoints/
-outputs/
-logs/
-
-.DS_Store
+*.pth
+*.ckpt

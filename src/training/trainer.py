@@ -1,4 +1,9 @@
+import os
+
+import numpy as np
+import pandas as pd
 import torch
+from PIL import Image as PILImage
 from torch.utils.data import DataLoader
 
 from src.models.traffic_clip import TrafficCLIP
@@ -9,84 +14,277 @@ from src.utils.seed import set_seed
 
 
 class Trainer:
-    def __init__(self, dataset, class_names, batch_size=4, lr=0.002, epochs=2, device=None):
+
+    def __init__(
+        self,
+        dataset,
+        class_names,
+        batch_size=4,
+        lr=0.0001,
+        epochs=2,
+        device=None
+    ):
+
         set_seed(42)
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.device = device or (
+            "cuda"
+            if torch.cuda.is_available()
+            else "cpu"
+        )
+
+        print(f"Device: {self.device}")
+
         self.dataset = dataset
         self.class_names = class_names
         self.epochs = epochs
 
-        self.dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        self.dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=0
+        )
 
-        self.model = TrafficCLIP(embed_dim=1024).to(self.device)
+        print("Loading TrafficCLIP model...")
+
+        self.model = TrafficCLIP(
+            embed_dim=1024
+        ).to(self.device)
+
         self.ce_loss = TrafficCrossEntropy()
+
         self.cl_loss = SupConLoss()
 
-        self.optimizer = torch.optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=1e-4)
-        self.scheduler = get_scheduler(self.optimizer, total_epochs=epochs, base_lr=lr)
+        # Only trainable parameters are optimized.
+        trainable_parameters = [
+            p for p in self.model.parameters()
+            if p.requires_grad
+        ]
 
-        # Prompt template from the paper: "a network traffic photo of {}"
-        self.text_prompts = [f"a network traffic photo of {c}" for c in class_names]
+        print(
+            "Trainable parameters:",
+            sum(
+                p.numel()
+                for p in trainable_parameters
+            )
+        )
+
+        self.optimizer = torch.optim.AdamW(
+            trainable_parameters,
+            lr=lr,
+            weight_decay=1e-4
+        )
+
+        self.scheduler = get_scheduler(
+            self.optimizer,
+            total_epochs=epochs,
+            base_lr=lr
+        )
+
+        self.text_prompts = [
+            f"a network traffic photo of {c}"
+            for c in class_names
+        ]
+
+        print("TrafficCLIP ready.")
+        print(
+            f"Training batches per epoch: "
+            f"{len(self.dataloader)}"
+        )
 
     def train(self):
+
         self.model.train()
+
+        # Keep frozen semantic encoder in evaluation mode.
+        self.model.semantic_encoder.eval()
+
+        # Keep frozen BERT in evaluation mode.
+        self.model.text_encoder.bert.eval()
+
         losses = []
 
+        total_batches = len(
+            self.dataloader
+        )
+
         for epoch in range(self.epochs):
+
             epoch_loss = 0.0
-            for batch in self.dataloader:
-                images = batch["image"].to(self.device)
-                labels = batch["label"].to(self.device)
 
-                logits_per_image, _ = self.model(images, self.text_prompts)
+            print(
+                f"\nEpoch {epoch + 1}/{self.epochs}"
+            )
 
-                loss_ce = self.ce_loss(logits_per_image, labels)
+            for batch_idx, batch in enumerate(
+                self.dataloader,
+                start=1
+            ):
 
-                # Contrastive loss needs the fused visual features, not the final logits.
-                # We recompute them the same way the model does internally.
-                detail_feat = self.model.detail_encoder(images)
-                semantic_feat = self.model.adapter(self.model.semantic_encoder(images))
-                visual_feat = self.model.fusion(detail_feat, semantic_feat)
-                loss_cl = self.cl_loss(visual_feat, labels)
+                images = batch["image"].to(
+                    self.device
+                )
 
-                loss = loss_ce + loss_cl
+                labels = batch["label"].to(
+                    self.device
+                )
 
-                self.optimizer.zero_grad()
+                stats = batch["stats"].to(
+                    self.device
+                )
+
+                # ------------------------------------------------
+                # ONE visual forward pass
+                # ------------------------------------------------
+
+                visual_feat = self.model.encode_visual(
+                    images,
+                    stats
+                )
+
+                # ------------------------------------------------
+                # Text encoding
+                # BERT itself is frozen.
+                # Only the 768 -> 1024 projection is trainable.
+                # ------------------------------------------------
+
+                text_feat = self.model.text_encoder(
+                    self.text_prompts
+                )
+
+                text_feat = text_feat / (
+                    text_feat.norm(
+                        dim=-1,
+                        keepdim=True
+                    ) + 1e-8
+                )
+
+                logit_scale = (
+                    self.model.logit_scale.exp()
+                )
+
+                logits_per_image = (
+                    logit_scale *
+                    visual_feat @ text_feat.t()
+                )
+
+                # ------------------------------------------------
+                # Classification loss
+                # ------------------------------------------------
+
+                loss_ce = self.ce_loss(
+                    logits_per_image,
+                    labels
+                )
+
+                # ------------------------------------------------
+                # Supervised contrastive loss
+                # ------------------------------------------------
+
+                loss_cl = self.cl_loss(
+                    visual_feat,
+                    labels
+                )
+
+                # ------------------------------------------------
+                # Total loss
+                # ------------------------------------------------
+
+                loss = (
+                    loss_ce +
+                    loss_cl
+                )
+
+                # ------------------------------------------------
+                # Backpropagation
+                # ------------------------------------------------
+
+                self.optimizer.zero_grad(
+                    set_to_none=True
+                )
+
                 loss.backward()
+
                 self.optimizer.step()
 
-                epoch_loss += loss.item()
-                losses.append(loss.item())
+                # ------------------------------------------------
+                # Record
+                # ------------------------------------------------
+
+                loss_value = loss.item()
+
+                epoch_loss += loss_value
+
+                losses.append(
+                    loss_value
+                )
+
+                # Print progress every 25 batches
+                if (
+                    batch_idx == 1
+                    or batch_idx % 25 == 0
+                    or batch_idx == total_batches
+                ):
+
+                    print(
+                        f"  Batch "
+                        f"{batch_idx}/{total_batches} "
+                        f"- Loss: {loss_value:.4f}",
+                        flush=True
+                    )
 
             self.scheduler.step()
-            avg_loss = epoch_loss / len(self.dataloader)
-            print(f"Epoch {epoch+1}/{self.epochs} - Loss: {avg_loss:.4f}")
+
+            avg_loss = (
+                epoch_loss /
+                total_batches
+            )
+
+            print(
+                f"Epoch {epoch + 1}/{self.epochs} "
+                f"completed - "
+                f"Average Loss: {avg_loss:.4f}",
+                flush=True
+            )
+
+        # --------------------------------------------------------
+        # Save checkpoint
+        # --------------------------------------------------------
+
+        os.makedirs(
+            "outputs",
+            exist_ok=True
+        )
+
+        checkpoint_path = (
+            "outputs/traffic_clip_best.pt"
+        )
+
+        torch.save(
+            {
+                "model_state_dict":
+                    self.model.state_dict(),
+
+                "class_names":
+                    self.class_names,
+
+                "epochs":
+                    self.epochs,
+            },
+            checkpoint_path
+        )
+
+        print(
+            f"\nModel checkpoint saved to: "
+            f"{checkpoint_path}"
+        )
 
         return losses
 
 
 if __name__ == "__main__":
-    # Quick self-test with dummy data, same pattern as traffic_dataset.py
-    import tempfile
-    import os
-    import pandas as pd
-    import numpy as np
-    from PIL import Image as PILImage
-    from src.datasets.traffic_dataset import TrafficDataset
 
-    tmp_dir = tempfile.mkdtemp()
-    csv_path = os.path.join(tmp_dir, "dummy.csv")
-    rows = []
-    for i, label in enumerate(["Skype", "Zoom"] * 2):
-        img_path = os.path.join(tmp_dir, f"img_{i}.png")
-        arr = np.random.randint(0, 255, (28, 28), dtype=np.uint8)
-        PILImage.fromarray(arr, mode="L").save(img_path)
-        rows.append((img_path, label))
-    pd.DataFrame(rows, columns=["image_path", "label"]).to_csv(csv_path, index=False)
-
-    dataset = TrafficDataset(csv_path)
-    class_names = list(dataset.class_to_idx.keys())
-
-    trainer = Trainer(dataset, class_names, batch_size=2, epochs=2)
-    losses = trainer.train()
-    print(f"Final losses: {losses}")
+    print(
+        "Trainer module loaded successfully."
+    )
